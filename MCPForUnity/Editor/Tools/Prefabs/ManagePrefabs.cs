@@ -4,8 +4,11 @@ using MCPForUnity.Editor.Helpers;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+using UnityEditor.Experimental.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using PrefabStage = UnityEditor.Experimental.SceneManagement.PrefabStage;
+using PrefabStageUtility = UnityEditor.Experimental.SceneManagement.PrefabStageUtility;
 
 namespace MCPForUnity.Editor.Tools.Prefabs
 {
@@ -71,10 +74,18 @@ namespace MCPForUnity.Editor.Tools.Prefabs
                 return Response.Error("Only PrefabStage mode 'InIsolation' is supported at this time.");
             }
 
-            PrefabStage stage = PrefabStageUtility.OpenPrefab(sanitizedPath);
+            // In Unity 2020.3, use AssetDatabase.OpenAsset to open prefab stage
+            bool opened = AssetDatabase.OpenAsset(prefabAsset);
+            if (!opened)
+            {
+                return Response.Error($"Failed to open prefab asset at '{sanitizedPath}'.");
+            }
+
+            // Get the opened prefab stage
+            PrefabStage stage = PrefabStageUtility.GetCurrentPrefabStage();
             if (stage == null)
             {
-                return Response.Error($"Failed to open prefab stage for '{sanitizedPath}'.");
+                return Response.Error($"Failed to get prefab stage for '{sanitizedPath}'.");
             }
 
             return Response.Success($"Opened prefab stage for '{sanitizedPath}'.", SerializeStage(stage));

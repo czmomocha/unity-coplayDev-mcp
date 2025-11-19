@@ -1406,21 +1406,13 @@ namespace MCPForUnity.Editor.Tools
                     Type componentType = FindType(searchTerm);
                     if (componentType != null)
                     {
-                        // Determine FindObjectsInactive based on the searchInactive flag
-                        FindObjectsInactive findInactive = searchInactive
-                            ? FindObjectsInactive.Include
-                            : FindObjectsInactive.Exclude;
-                        // Replace FindObjectsOfType with FindObjectsByType, specifying the sorting mode and inactive state
+                        // Use FindObjectsOfType for Unity 2020.3 compatibility
                         var searchPoolComp = rootSearchObject
                             ? rootSearchObject
                                 .GetComponentsInChildren(componentType, searchInactive)
                                 .Select(c => (c as Component).gameObject)
                             : UnityEngine
-                                .Object.FindObjectsByType(
-                                    componentType,
-                                    findInactive,
-                                    FindObjectsSortMode.None
-                                )
+                                .Object.FindObjectsOfType(componentType, searchInactive)
                                 .Select(c => (c as Component).gameObject);
                         results.AddRange(searchPoolComp.Where(go => go != null)); // Ensure GO is valid
                     }
@@ -2301,8 +2293,8 @@ namespace MCPForUnity.Editor.Tools
     /// </summary>
     internal static class ComponentResolver
     {
-        private static readonly Dictionary<string, Type> CacheByFqn = new(StringComparer.Ordinal);
-        private static readonly Dictionary<string, Type> CacheByName = new(StringComparer.Ordinal);
+        private static readonly Dictionary<string, Type> CacheByFqn = new Dictionary<string, Type>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, Type> CacheByName = new Dictionary<string, Type>(StringComparer.Ordinal);
 
         /// <summary>
         /// Resolve a Component/MonoBehaviour type by short or fully-qualified name.
@@ -2384,8 +2376,8 @@ namespace MCPForUnity.Editor.Tools
             }
 
             Func<Type, bool> match = isShort
-                ? (t => t.Name.Equals(query, StringComparison.Ordinal))
-                : (t => t.FullName!.Equals(query, StringComparison.Ordinal));
+                ? new Func<Type, bool>(t => t.Name.Equals(query, StringComparison.Ordinal))
+                : new Func<Type, bool>(t => t.FullName!.Equals(query, StringComparison.Ordinal));
 
             var fromPlayer = playerAsms.SelectMany(SafeGetTypes)
                                        .Where(IsValidComponent)
@@ -2484,7 +2476,7 @@ namespace MCPForUnity.Editor.Tools
             }
         }
 
-        private static readonly Dictionary<string, List<string>> PropertySuggestionCache = new();
+        private static readonly Dictionary<string, List<string>> PropertySuggestionCache = new Dictionary<string, List<string>>();
 
         /// <summary>
         /// Rule-based suggestions that mimic AI behavior for property matching.

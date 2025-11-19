@@ -16,7 +16,7 @@ namespace MCPForUnity.Editor.Services
     /// </summary>
     public class ClientConfigurationService : IClientConfigurationService
     {
-        private readonly Data.McpClients mcpClients = new();
+        private readonly Data.McpClients mcpClients = new Data.McpClients();
 
         public void ConfigureClient(McpClient client)
         {

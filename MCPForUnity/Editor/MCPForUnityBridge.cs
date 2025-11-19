@@ -43,11 +43,11 @@ namespace MCPForUnity.Editor
     {
         private static TcpListener listener;
         private static bool isRunning = false;
-        private static readonly object lockObj = new();
-        private static readonly object startStopLock = new();
-        private static readonly object clientsLock = new();
-        private static readonly System.Collections.Generic.HashSet<TcpClient> activeClients = new();
-        private static readonly BlockingCollection<Outbound> _outbox = new(new ConcurrentQueue<Outbound>());
+        private static readonly object lockObj = new object();
+        private static readonly object startStopLock = new object();
+        private static readonly object clientsLock = new object();
+        private static readonly System.Collections.Generic.HashSet<TcpClient> activeClients = new System.Collections.Generic.HashSet<TcpClient>();
+        private static readonly BlockingCollection<Outbound> _outbox = new BlockingCollection<Outbound>(new ConcurrentQueue<Outbound>());
         private static CancellationTokenSource cts;
         private static Task listenerTask;
         private static int processingCommands = 0;
@@ -57,7 +57,7 @@ namespace MCPForUnity.Editor
         private static double nextStartAt = 0.0f;
         private static double nextHeartbeatAt = 0.0f;
         private static int heartbeatSeq = 0;
-        private static Dictionary<string, QueuedCommand> commandQueue = new();
+        private static Dictionary<string, QueuedCommand> commandQueue = new Dictionary<string, QueuedCommand>();
         private static int mainThreadId;
         private static int currentUnityPort = 6400; // Dynamic port, starts with default
         private static bool isAutoConnectMode = false;
@@ -127,7 +127,7 @@ namespace MCPForUnity.Editor
 
             string fullPath = Path.Combine(
                 Application.dataPath,
-                path.StartsWith("Assets/") ? path[7..] : path
+                path.StartsWith("Assets/") ? path.Substring(7) : path
             );
             return Directory.Exists(fullPath);
         }
@@ -924,7 +924,7 @@ namespace MCPForUnity.Editor
                                 status = "error",
                                 error = "Invalid JSON format",
                                 receivedText = commandText.Length > 50
-                                    ? commandText[..50] + "..."
+                                    ? commandText.Substring(0, 50) + "..."
                                     : commandText,
                             };
                             tcs.SetResult(JsonConvert.SerializeObject(invalidJsonResponse));
@@ -989,7 +989,7 @@ namespace MCPForUnity.Editor
                             error = ex.Message,
                             commandType = "Unknown (error during processing)",
                             receivedText = commandText?.Length > 50
-                                ? commandText[..50] + "..."
+                                ? commandText.Substring(0, 50) + "..."
                                 : commandText,
                         };
                         string responseJson = JsonConvert.SerializeObject(response);
@@ -1177,9 +1177,13 @@ namespace MCPForUnity.Editor
                         ", ",
                         @params
                             .Properties()
-                            .Select(static p =>
-                                $"{p.Name}: {p.Value?.ToString()?[..Math.Min(20, p.Value?.ToString()?.Length ?? 0)]}"
-                            )
+                            .Select(p =>
+                            {
+                                var valueStr = p.Value?.ToString();
+                                var maxLen = valueStr?.Length ?? 0;
+                                var truncated = valueStr != null ? valueStr.Substring(0, Math.Min(20, maxLen)) : "";
+                                return $"{p.Name}: {truncated}";
+                            })
                     );
             }
             catch
@@ -1287,7 +1291,7 @@ namespace MCPForUnity.Editor
                 {
                     sb.Append(b.ToString("x2"));
                 }
-                return sb.ToString()[..8];
+                return sb.ToString().Substring(0, 8);
             }
             catch
             {

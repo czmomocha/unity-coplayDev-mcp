@@ -25,11 +25,24 @@ namespace MCPForUnity.Editor.Dependencies.PlatformDetectors
 
             try
             {
+                // First, try PATH resolution (works for Microsoft Store Python and other installations)
+                if (TryFindInPath("python.exe", out string pathResult) ||
+                    TryFindInPath("python3.exe", out pathResult))
+                {
+                    if (TryValidatePython(pathResult, out string version, out string fullPath))
+                    {
+                        status.IsAvailable = true;
+                        status.Version = version;
+                        status.Path = fullPath;
+                        status.Details = $"Found Python {version} in PATH at {fullPath}";
+                        return status;
+                    }
+                }
+
                 // Check common Python installation paths
                 var candidates = new[]
                 {
-                    "python.exe",
-                    "python3.exe",
+                    // User AppData installations
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                         "Programs", "Python", "Python314", "python.exe"),
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -40,6 +53,7 @@ namespace MCPForUnity.Editor.Dependencies.PlatformDetectors
                         "Programs", "Python", "Python311", "python.exe"),
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                         "Programs", "Python", "Python310", "python.exe"),
+                    // Program Files installations
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
                         "Python314", "python.exe"),
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
@@ -49,6 +63,23 @@ namespace MCPForUnity.Editor.Dependencies.PlatformDetectors
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
                         "Python311", "python.exe"),
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                        "Python310", "python.exe"),
+                    // Root drive installations (C:\Python312)
+                    "C:\\Python314\\python.exe",
+                    "C:\\Python313\\python.exe",
+                    "C:\\Python312\\python.exe",
+                    "C:\\Python311\\python.exe",
+                    "C:\\Python310\\python.exe",
+                    // User profile installations
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                        "Python314", "python.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                        "Python313", "python.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                        "Python312", "python.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                        "Python311", "python.exe"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                         "Python310", "python.exe")
                 };
 
@@ -64,22 +95,8 @@ namespace MCPForUnity.Editor.Dependencies.PlatformDetectors
                     }
                 }
 
-                // Try PATH resolution using 'where' command
-                if (TryFindInPath("python.exe", out string pathResult) ||
-                    TryFindInPath("python3.exe", out pathResult))
-                {
-                    if (TryValidatePython(pathResult, out string version, out string fullPath))
-                    {
-                        status.IsAvailable = true;
-                        status.Version = version;
-                        status.Path = fullPath;
-                        status.Details = $"Found Python {version} in PATH at {fullPath}";
-                        return status;
-                    }
-                }
-
-                status.ErrorMessage = "Python not found. Please install Python 3.10 or later.";
-                status.Details = "Checked common installation paths and PATH environment variable.";
+                status.ErrorMessage = "Python not found. Please install Python 3.10 or later from Microsoft Store or python.org.";
+                status.Details = "Checked PATH environment variable and common installation paths.";
             }
             catch (Exception ex)
             {
@@ -186,7 +203,9 @@ namespace MCPForUnity.Editor.Dependencies.PlatformDetectors
                     if (lines.Length > 0)
                     {
                         fullPath = lines[0].Trim();
-                        return File.Exists(fullPath);
+                        // Don't check File.Exists for Microsoft Store apps (they are execution aliases)
+                        // Just return true if we got a path from 'where' command
+                        return !string.IsNullOrEmpty(fullPath);
                     }
                 }
             }

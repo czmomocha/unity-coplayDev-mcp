@@ -7,10 +7,10 @@ namespace MCPForUnity.Editor.Data
 {
     public class McpClients
     {
-        public List<McpClient> clients = new()
+        public List<McpClient> clients = new List<McpClient>()
         {
             // 1) Cursor
-            new()
+            new McpClient()
             {
                 name = "Cursor",
                 windowsConfigPath = Path.Combine(
@@ -32,7 +32,7 @@ namespace MCPForUnity.Editor.Data
                 configStatus = "Not Configured",
             },
             // 2) Claude Code
-            new()
+            new McpClient()
             {
                 name = "Claude Code",
                 windowsConfigPath = Path.Combine(
@@ -51,7 +51,7 @@ namespace MCPForUnity.Editor.Data
                 configStatus = "Not Configured",
             },
             // 3) Windsurf
-            new()
+            new McpClient()
             {
                 name = "Windsurf",
                 windowsConfigPath = Path.Combine(
@@ -76,7 +76,7 @@ namespace MCPForUnity.Editor.Data
                 configStatus = "Not Configured",
             },
             // 4) Claude Desktop
-            new()
+            new McpClient()
             {
                 name = "Claude Desktop",
                 windowsConfigPath = Path.Combine(
@@ -103,7 +103,7 @@ namespace MCPForUnity.Editor.Data
                 configStatus = "Not Configured",
             },
             // 5) VSCode GitHub Copilot
-            new()
+            new McpClient()
             {
                 name = "VSCode GitHub Copilot",
                 // Windows path is canonical under %AppData%\Code\User
@@ -134,7 +134,7 @@ namespace MCPForUnity.Editor.Data
                 configStatus = "Not Configured",
             },
             // Trae IDE
-            new()
+            new McpClient()
             {
                 name = "Trae",
                 // Windows: %AppData%\Trae\mcp.json
@@ -162,7 +162,7 @@ namespace MCPForUnity.Editor.Data
                 configStatus = "Not Configured",
             },
             // 3) Kiro
-            new()
+            new McpClient()
             {
                 name = "Kiro",
                 windowsConfigPath = Path.Combine(
@@ -187,7 +187,7 @@ namespace MCPForUnity.Editor.Data
                 configStatus = "Not Configured",
             },
             // 4) Codex CLI
-            new()
+            new McpClient()
             {
                 name = "Codex CLI",
                 windowsConfigPath = Path.Combine(

@@ -2,6 +2,8 @@ using System;
 using MCPForUnity.Editor.Helpers;
 using Newtonsoft.Json.Linq;
 using UnityEditor.SceneManagement;
+using UnityEditor.Experimental.SceneManagement;
+using PrefabStageUtility = UnityEditor.Experimental.SceneManagement.PrefabStageUtility;
 
 namespace MCPForUnity.Editor.Resources.Editor
 {

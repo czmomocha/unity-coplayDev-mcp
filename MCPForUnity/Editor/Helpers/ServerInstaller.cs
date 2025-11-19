@@ -918,7 +918,32 @@ namespace MCPForUnity.Editor.Helpers
 
                 try
                 {
-                    ZipFile.ExtractToDirectory(tempZip, tempExtractDir);
+                    // Use ZipArchive for Unity 2020.3 compatibility
+                    using (var fileStream = new FileStream(tempZip, FileMode.Open, FileAccess.Read))
+                    using (var archive = new ZipArchive(fileStream, ZipArchiveMode.Read))
+                    {
+                        foreach (var entry in archive.Entries)
+                        {
+                            string destinationPath = Path.Combine(tempExtractDir, entry.FullName);
+                            
+                            // Create directory if needed
+                            string directoryPath = Path.GetDirectoryName(destinationPath);
+                            if (!string.IsNullOrEmpty(directoryPath) && !Directory.Exists(directoryPath))
+                            {
+                                Directory.CreateDirectory(directoryPath);
+                            }
+                            
+                            // Extract file (skip directories)
+                            if (!string.IsNullOrEmpty(entry.Name))
+                            {
+                                using (var entryStream = entry.Open())
+                                using (var targetStream = new FileStream(destinationPath, FileMode.Create, FileAccess.Write))
+                                {
+                                    entryStream.CopyTo(targetStream);
+                                }
+                            }
+                        }
+                    }
 
                     // The ZIP contains UnityMcpServer~ folder, find it and move its contents
                     string extractedServerFolder = Path.Combine(tempExtractDir, "UnityMcpServer~");
