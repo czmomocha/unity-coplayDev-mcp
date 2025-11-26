@@ -44,6 +44,7 @@
 - 在多个包来源之间快速切换可使用 `python mcp_source.py --choice {1|2|3}`，对照 `manifest.json` 定位目标包（上游、当前分支或本地目录）。
 - 由于 Python 服务器源码已随 Unity 包一同打包在 `UnityMcpServer~/src`，下游项目只需更新包即可获得最新服务器，无需额外安装流程。
 - 推荐遵循官方 Workflow：修改 → deploy → Unity 中测试 → 迭代 → restore，确保开发环境干净可控。
+- **TSProject 支持**：`create_ts_script`、`delete_ts_script`、`manage_ts_script` 等工具已支持 `DevCommon/TSProject` 及其子目录，可与独立 TypeScript 工程同级协作。
 
 ## 4. 生产环境发布与替换
 

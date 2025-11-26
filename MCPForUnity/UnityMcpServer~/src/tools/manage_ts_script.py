@@ -22,6 +22,13 @@ TS_CONFIG_CANDIDATES = [
     "Assets/Puerts/tsconfig.json",
     "Assets/Puerts/TypeScripts/tsconfig.json",
     "Assets/TypeScripts/tsconfig.json",
+    "DevCommon/TSProject/tsconfig.puerts.json",
+    "DevCommon/TSProject/tsconfig.unity.json",
+    "DevCommon/TSProject/tsconfig.json",
+]
+TS_ALLOWED_ROOTS = [
+    "Assets",
+    "DevCommon/TSProject",
 ]
 TS_DIR_HINTS = [
     "Assets/TypeScripts",
@@ -29,6 +36,11 @@ TS_DIR_HINTS = [
     "Assets/Puerts/TypeScripts",
     "Assets/Scripts",
     "Assets",
+    "DevCommon/TSProject",
+    "DevCommon/TSProject/Src",
+    "DevCommon/TSProject/Mediator",
+    "DevCommon/TSProject/Module",
+    "DevCommon/TSProject/Output",
 ]
 
 
@@ -36,20 +48,37 @@ class _ValidationError(Exception):
     """Internal exception to bubble structured validation issues."""
 
 
-def _normalize_assets_relative(path: str) -> str:
+def _normalize_project_relative(path: str) -> str:
     if not path:
-        raise _ValidationError("path is required and must start with Assets/")
+        raise _ValidationError("path is required")
     normalized = path.replace("\\", "/").strip()
     if normalized.startswith("./"):
         normalized = normalized[2:]
     normalized = normalized.lstrip("/")
     parts = [p for p in normalized.split("/") if p not in ("", ".")]
-    if not parts or parts[0].lower() != "assets":
-        raise _ValidationError("path must live under Assets/")
     if any(part == ".." for part in parts):
         raise _ValidationError("path must not contain traversal segments")
-    parts[0] = "Assets"
     return "/".join(parts)
+
+
+def _ts_allowed_root_paths(project: Path) -> list[Path]:
+    roots: list[Path] = []
+    for rel in TS_ALLOWED_ROOTS:
+        candidate = (project / rel).resolve()
+        if candidate not in roots:
+            roots.append(candidate)
+    return roots
+
+
+def _assert_within_allowed(path: Path, project: Path, allowed_roots: list[Path]) -> None:
+    for root in allowed_roots:
+        try:
+            path.relative_to(root)
+            return
+        except ValueError:
+            continue
+    allowed = ", ".join(r.relative_to(project).as_posix() for r in allowed_roots)
+    raise _ValidationError(f"TypeScript files must live under: {allowed}")
 
 
 def _ensure_ts_extension(path: Path):
@@ -59,19 +88,22 @@ def _ensure_ts_extension(path: Path):
 
 def _resolve_ts_path(project: Path, target: str, *, allow_create: bool = False) -> Path:
     if not target:
-        raise _ValidationError("A TypeScript URI or Assets-relative path is required")
+        raise _ValidationError("A TypeScript URI or project-relative path is required")
+    allowed_roots = _ts_allowed_root_paths(project)
     resolved: Path | None = None
-    if target.startswith(("unity://path/", "file://", "Assets/")):
+    if target.startswith(("unity://path/", "file://")):
         resolved = _resolve_safe_path_from_uri(target, project)
         if resolved is None:
             raise _ValidationError("Unable to resolve target path inside the project")
     else:
-        rel = _normalize_assets_relative(target)
-        resolved = (project / rel).resolve()
+        normalized = _normalize_project_relative(target)
+        candidate = Path(normalized)
+        resolved = candidate if candidate.is_absolute() else (project / candidate).resolve()
     try:
-        resolved.relative_to(project / "Assets")
+        resolved.relative_to(project)
     except ValueError:
-        raise _ValidationError("TypeScript files must reside under Assets/")
+        raise _ValidationError("TypeScript paths must stay within the Unity project")
+    _assert_within_allowed(resolved, project, allowed_roots)
     _ensure_ts_extension(resolved)
     if not allow_create and not resolved.exists():
         raise FileNotFoundError(f"TypeScript file not found: {resolved}")
@@ -82,9 +114,14 @@ def _path_metadata(project: Path, path: Path) -> dict[str, Any]:
     rel = path.relative_to(project).as_posix()
     sha = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
     data: dict[str, Any] = {
-        "assetsPath": rel,
+        "projectPath": rel,
         "uri": f"unity://path/{rel}",
     }
+    try:
+        assets_rel = path.relative_to(project / "Assets").as_posix()
+        data["assetsPath"] = f"Assets/{assets_rel}" if assets_rel else "Assets"
+    except ValueError:
+        pass
     if sha:
         data.update({
             "sha256": sha,
@@ -161,10 +198,10 @@ def _safe_project(ctx: Context, project_root: str | None) -> Path:
     return _resolve_project_root(ctx, project_root)
 
 
-@mcp_for_unity_tool(description="Create a new TypeScript file at the given Assets-relative path.")
+@mcp_for_unity_tool(description="Create a new TypeScript file under Assets/ or DevCommon/TSProject.")
 def create_ts_script(
     ctx: Context,
-    path: Annotated[str, "Path under Assets/ to create the TypeScript file at, e.g., 'Assets/TypeScripts/ui.ts'"],
+    path: Annotated[str, "Path under Assets/ or DevCommon/TSProject/, e.g., 'DevCommon/TSProject/Src/ui.ts'"],
     contents: Annotated[str, "TypeScript source code to write"],
     overwrite: Annotated[bool, "Allow replacing an existing file"] = False,
     project_root: Annotated[str, "Optional project root override"] | None = None,
@@ -186,10 +223,10 @@ def create_ts_script(
         return {"success": False, "message": f"create_ts_script error: {exc}"}
 
 
-@mcp_for_unity_tool(description="Delete a TypeScript file identified by URI or Assets-relative path.")
+@mcp_for_unity_tool(description="Delete a TypeScript file identified by URI or project-relative path.")
 def delete_ts_script(
     ctx: Context,
-    uri: Annotated[str, "URI or Assets-relative path pointing to the TypeScript file"],
+    uri: Annotated[str, "URI or project path pointing to the TypeScript file"],
     project_root: Annotated[str, "Optional project root override"] | None = None,
 ) -> dict[str, Any]:
     unity_instance = get_unity_instance_from_context(ctx)
@@ -275,7 +312,7 @@ def validate_ts_script(
 def manage_ts_script(
     ctx: Context,
     action: Annotated[Literal['create', 'read', 'delete', 'write', 'append', 'rename'], "Operation to perform"],
-    path: Annotated[str, "Primary TypeScript URI or Assets path"],
+    path: Annotated[str, "Primary TypeScript URI or project path"],
     contents: Annotated[str, "Content for create/write/append"] | None = None,
     target_path: Annotated[str | None, "Destination path for rename"] | None = None,
     overwrite: Annotated[bool, "Allow overwrite for create/write/rename"] = False,
@@ -319,11 +356,13 @@ def manage_ts_script(
             if destination.exists() and not overwrite:
                 raise _ValidationError("Destination already exists; set overwrite=true to replace")
             destination.parent.mkdir(parents=True, exist_ok=True)
+            from_meta = _path_metadata(project, primary)
             primary.replace(destination)
+            to_meta = _path_metadata(project, destination)
             data = {
-                "from": _path_metadata(project, primary)["assetsPath"],
-                "to": _path_metadata(project, destination)["assetsPath"],
-                "uri": f"unity://path/{destination.relative_to(project).as_posix()}",
+                "from": from_meta.get("projectPath") or from_meta.get("assetsPath"),
+                "to": to_meta.get("projectPath") or to_meta.get("assetsPath"),
+                "uri": to_meta["uri"],
             }
             return {"success": True, "message": "TypeScript file renamed", "data": data}
         raise _ValidationError(f"Unsupported manage_ts_script action: {action}")
