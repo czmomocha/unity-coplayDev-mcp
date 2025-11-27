@@ -8,6 +8,7 @@ using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.Compilation; // For CompilationPipeline
 using UnityEditor.SceneManagement;
+using UnityEditor.Experimental.SceneManagement;
 using UnityEditorInternal;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -159,8 +160,10 @@ namespace MCPForUnity.Editor.Tools
                         return CreateGameObject(@params);
                     case "modify":
                         return ModifyGameObject(@params, targetToken, searchMethod);
+                    case "duplicate":
+                        return DuplicateGameObject(@params, targetToken, searchMethod);
                     case "delete":
-                        return DeleteGameObject(targetToken, searchMethod);
+                        return DeleteGameObject(@params, targetToken, searchMethod);
                     case "find":
                         return FindGameObjects(@params, targetToken, searchMethod);
                     case "get_components":
@@ -170,7 +173,12 @@ namespace MCPForUnity.Editor.Tools
                                 "'target' parameter required for get_components."
                             );
                         // Pass the includeNonPublicSerialized flag here
-                        return GetComponentsFromTarget(getCompTarget, searchMethod, includeNonPublicSerialized);
+                        return GetComponentsFromTarget(
+                            getCompTarget,
+                            searchMethod,
+                            includeNonPublicSerialized,
+                            @params
+                        );
                     case "get_component":
                         string getSingleCompTarget = targetToken?.ToString();
                         if (getSingleCompTarget == null)
@@ -182,7 +190,13 @@ namespace MCPForUnity.Editor.Tools
                             return Response.Error(
                                 "'componentName' parameter required for get_component."
                             );
-                        return GetSingleComponentFromTarget(getSingleCompTarget, searchMethod, componentName, includeNonPublicSerialized);
+                        return GetSingleComponentFromTarget(
+                            getSingleCompTarget,
+                            searchMethod,
+                            componentName,
+                            includeNonPublicSerialized,
+                            @params
+                        );
                     case "add_component":
                         return AddComponentToTarget(@params, targetToken, searchMethod);
                     case "remove_component":
@@ -379,6 +393,16 @@ namespace MCPForUnity.Editor.Tools
             {
                 // Should theoretically not happen if logic above is correct, but safety check.
                 return Response.Error("Failed to create or instantiate the GameObject.");
+            }
+
+            var prefabStageRoot = GetPrefabStageRoot();
+            if (prefabStageRoot != null)
+            {
+                StageUtility.PlaceGameObjectInCurrentStage(newGo);
+                if (@params["parent"] == null)
+                {
+                    newGo.transform.SetParent(prefabStageRoot.transform, true);
+                }
             }
 
             // Record potential changes to the existing prefab instance or the new GO
@@ -612,7 +636,7 @@ namespace MCPForUnity.Editor.Tools
             string searchMethod
         )
         {
-            GameObject targetGo = FindObjectInternal(targetToken, searchMethod);
+            GameObject targetGo = FindObjectInternal(targetToken, searchMethod, @params);
             if (targetGo == null)
             {
                 return Response.Error(
@@ -898,10 +922,166 @@ namespace MCPForUnity.Editor.Tools
 
         }
 
-        private static object DeleteGameObject(JToken targetToken, string searchMethod)
+        private static object DuplicateGameObject(
+            JObject @params,
+            JToken targetToken,
+            string searchMethod
+        )
+        {
+            GameObject sourceGo = FindObjectInternal(targetToken, searchMethod, @params);
+            if (sourceGo == null)
+            {
+                return Response.Error(
+                    $"Target GameObject ('{targetToken}') not found using method '{searchMethod ?? "default"}'."
+                );
+            }
+
+            string requestedName = @params["newName"]?.ToString();
+            if (string.IsNullOrEmpty(requestedName))
+            {
+                requestedName = @params["name"]?.ToString();
+            }
+
+            Transform desiredParent = sourceGo.transform.parent;
+            JToken parentToken = @params["parent"];
+            if (parentToken != null)
+            {
+                if (
+                    parentToken.Type == JTokenType.Null
+                    || (
+                        parentToken.Type == JTokenType.String
+                        && string.IsNullOrWhiteSpace(parentToken.ToString())
+                    )
+                )
+                {
+                    desiredParent = null;
+                }
+                else
+                {
+                    GameObject parentCandidate = FindObjectInternal(parentToken, "by_id_or_name_or_path");
+                    if (parentCandidate == null)
+                    {
+                        return Response.Error($"Parent ('{parentToken}') not found for duplicate operation.");
+                    }
+                    desiredParent = parentCandidate.transform;
+                }
+            }
+
+            bool maintainWorldPosition = ParseFlexibleBool(@params["maintainWorldPosition"]) ?? true;
+
+            GameObject duplicatedGo;
+            try
+            {
+                duplicatedGo = UnityEngine.Object.Instantiate(
+                    sourceGo,
+                    desiredParent,
+                    maintainWorldPosition
+                );
+            }
+            catch (Exception e)
+            {
+                return Response.Error(
+                    $"Failed to duplicate GameObject '{sourceGo.name}': {e.Message}"
+                );
+            }
+
+            var prefabStageRoot = GetPrefabStageRoot();
+            if (prefabStageRoot != null && desiredParent == null)
+            {
+                StageUtility.PlaceGameObjectInCurrentStage(duplicatedGo);
+                duplicatedGo.transform.SetParent(prefabStageRoot.transform, maintainWorldPosition);
+                desiredParent = prefabStageRoot.transform;
+            }
+
+            if (!string.IsNullOrEmpty(requestedName))
+            {
+                duplicatedGo.name = requestedName;
+            }
+            else
+            {
+                duplicatedGo.name = sourceGo.name;
+            }
+            GameObjectUtility.EnsureUniqueNameForSibling(duplicatedGo);
+
+            Undo.RegisterCreatedObjectUndo(
+                duplicatedGo,
+                $"Duplicate GameObject '{sourceGo.name}'"
+            );
+
+            int? siblingIndexOverride = null;
+            JToken siblingIndexToken = @params["siblingIndex"];
+            if (siblingIndexToken != null)
+            {
+                if (siblingIndexToken.Type == JTokenType.Integer)
+                {
+                    siblingIndexOverride = siblingIndexToken.ToObject<int>();
+                }
+                else if (
+                    siblingIndexToken.Type == JTokenType.String
+                    && int.TryParse(siblingIndexToken.ToString(), out int parsedIndex)
+                )
+                {
+                    siblingIndexOverride = parsedIndex;
+                }
+            }
+
+            Transform parentForIndex = duplicatedGo.transform.parent;
+            if (parentForIndex != null && parentForIndex.childCount > 0)
+            {
+                int defaultIndex =
+                    sourceGo.transform.parent == parentForIndex
+                        ? sourceGo.transform.GetSiblingIndex() + 1
+                        : parentForIndex.childCount - 1;
+                int targetIndex = siblingIndexOverride ?? defaultIndex;
+                targetIndex = Mathf.Clamp(targetIndex, 0, parentForIndex.childCount - 1);
+                duplicatedGo.transform.SetSiblingIndex(targetIndex);
+            }
+
+            Vector3? position = ParseVector3(@params["position"] as JArray);
+            Vector3? rotation = ParseVector3(@params["rotation"] as JArray);
+            Vector3? scale = ParseVector3(@params["scale"] as JArray);
+
+            if (position.HasValue)
+            {
+                duplicatedGo.transform.localPosition = position.Value;
+            }
+            if (rotation.HasValue)
+            {
+                duplicatedGo.transform.localEulerAngles = rotation.Value;
+            }
+            if (scale.HasValue)
+            {
+                duplicatedGo.transform.localScale = scale.Value;
+            }
+
+            bool? setActive = ParseFlexibleBool(@params["setActive"]);
+            if (setActive.HasValue)
+            {
+                duplicatedGo.SetActive(setActive.Value);
+            }
+
+            EditorUtility.SetDirty(duplicatedGo);
+            Selection.activeGameObject = duplicatedGo;
+
+            return Response.Success(
+                $"GameObject '{sourceGo.name}' duplicated as '{duplicatedGo.name}'.",
+                Helpers.GameObjectSerializer.GetGameObjectData(duplicatedGo)
+            );
+        }
+
+        private static object DeleteGameObject(
+            JObject @params,
+            JToken targetToken,
+            string searchMethod
+        )
         {
             // Find potentially multiple objects if name/tag search is used without find_all=false implicitly
-            List<GameObject> targets = FindObjectsInternal(targetToken, searchMethod, true); // find_all=true for delete safety
+            List<GameObject> targets = FindObjectsInternal(
+                targetToken,
+                searchMethod,
+                true,
+                @params
+            ); // find_all=true for delete safety
 
             if (targets.Count == 0)
             {
@@ -963,9 +1143,14 @@ namespace MCPForUnity.Editor.Tools
             return Response.Success($"Found {results.Count} GameObject(s).", results);
         }
 
-        private static object GetComponentsFromTarget(string target, string searchMethod, bool includeNonPublicSerialized = true)
+        private static object GetComponentsFromTarget(
+            string target,
+            string searchMethod,
+            bool includeNonPublicSerialized = true,
+            JObject findParams = null
+        )
         {
-            GameObject targetGo = FindObjectInternal(target, searchMethod);
+            GameObject targetGo = FindObjectInternal(target, searchMethod, findParams);
             if (targetGo == null)
             {
                 return Response.Error(
@@ -1036,9 +1221,15 @@ namespace MCPForUnity.Editor.Tools
             }
         }
 
-        private static object GetSingleComponentFromTarget(string target, string searchMethod, string componentName, bool includeNonPublicSerialized = true)
+        private static object GetSingleComponentFromTarget(
+            string target,
+            string searchMethod,
+            string componentName,
+            bool includeNonPublicSerialized = true,
+            JObject findParams = null
+        )
         {
-            GameObject targetGo = FindObjectInternal(target, searchMethod);
+            GameObject targetGo = FindObjectInternal(target, searchMethod, findParams);
             if (targetGo == null)
             {
                 return Response.Error(
@@ -1106,7 +1297,7 @@ namespace MCPForUnity.Editor.Tools
             string searchMethod
         )
         {
-            GameObject targetGo = FindObjectInternal(targetToken, searchMethod);
+            GameObject targetGo = FindObjectInternal(targetToken, searchMethod, @params);
             if (targetGo == null)
             {
                 return Response.Error(
@@ -1163,7 +1354,7 @@ namespace MCPForUnity.Editor.Tools
             string searchMethod
         )
         {
-            GameObject targetGo = FindObjectInternal(targetToken, searchMethod);
+            GameObject targetGo = FindObjectInternal(targetToken, searchMethod, @params);
             if (targetGo == null)
             {
                 return Response.Error(
@@ -1210,7 +1401,7 @@ namespace MCPForUnity.Editor.Tools
             string searchMethod
         )
         {
-            GameObject targetGo = FindObjectInternal(targetToken, searchMethod);
+            GameObject targetGo = FindObjectInternal(targetToken, searchMethod, @params);
             if (targetGo == null)
             {
                 return Response.Error(
@@ -1275,6 +1466,48 @@ namespace MCPForUnity.Editor.Tools
                     Debug.LogWarning($"Failed to parse JArray as Vector3: {array}. Error: {ex.Message}");
                 }
             }
+            return null;
+        }
+
+        private static bool? ParseFlexibleBool(JToken token)
+        {
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                return null;
+            }
+
+            if (token.Type == JTokenType.Boolean)
+            {
+                return token.Value<bool>();
+            }
+
+            if (token.Type == JTokenType.Integer)
+            {
+                return token.Value<int>() != 0;
+            }
+
+            if (token.Type == JTokenType.Float)
+            {
+                return !Mathf.Approximately(token.Value<float>(), 0f);
+            }
+
+            if (token.Type == JTokenType.String)
+            {
+                string normalized = token.ToString().Trim();
+                if (bool.TryParse(normalized, out bool boolResult))
+                {
+                    return boolResult;
+                }
+                if (int.TryParse(normalized, out int intResult))
+                {
+                    return intResult != 0;
+                }
+                if (float.TryParse(normalized, out float floatResult))
+                {
+                    return !Mathf.Approximately(floatResult, 0f);
+                }
+            }
+
             return null;
         }
 
@@ -1346,6 +1579,11 @@ namespace MCPForUnity.Editor.Tools
                 }
             }
 
+            if (!searchInChildren && rootSearchObject == null)
+            {
+                rootSearchObject = GetPrefabStageRoot();
+            }
+
             switch (searchMethod)
             {
                 case "by_id":
@@ -1370,12 +1608,13 @@ namespace MCPForUnity.Editor.Tools
                     results.AddRange(searchPoolName.Where(go => go.name == searchTerm));
                     break;
                 case "by_path":
-                    // Path is relative to scene root or rootSearchObject
-                    Transform foundTransform = rootSearchObject
-                        ? rootSearchObject.transform.Find(searchTerm)
-                        : GameObject.Find(searchTerm)?.transform;
-                    if (foundTransform != null)
-                        results.Add(foundTransform.gameObject);
+                    GameObject pathResult = rootSearchObject != null
+                        ? FindGameObjectByPath(searchTerm, rootSearchObject)
+                        : FindGameObjectByPath(searchTerm);
+                    if (pathResult != null)
+                    {
+                        results.Add(pathResult);
+                    }
                     break;
                 case "by_tag":
                     var searchPoolTag = rootSearchObject
@@ -1436,7 +1675,7 @@ namespace MCPForUnity.Editor.Tools
                             break;
                         }
                     }
-                    GameObject objByPath = GameObject.Find(searchTerm);
+                    GameObject objByPath = FindGameObjectByPath(searchTerm);
                     if (objByPath != null)
                     {
                         results.Add(objByPath);
@@ -1462,20 +1701,138 @@ namespace MCPForUnity.Editor.Tools
             return results.Distinct().ToList(); // Ensure uniqueness
         }
 
-        // Helper to get all scene objects efficiently
+        private static PrefabStage GetActivePrefabStage()
+        {
+            return PrefabStageUtility.GetCurrentPrefabStage();
+        }
+
+        private static GameObject GetPrefabStageRoot()
+        {
+            return GetActivePrefabStage()?.prefabContentsRoot;
+        }
+
+        private static Transform GetDefaultStageParent()
+        {
+            return GetPrefabStageRoot()?.transform;
+        }
+
+        private static IEnumerable<GameObject> GetContextRootGameObjects()
+        {
+            var stageRoot = GetPrefabStageRoot();
+            if (stageRoot != null)
+            {
+                yield return stageRoot;
+                yield break;
+            }
+
+            var activeScene = SceneManager.GetActiveScene();
+            foreach (var root in activeScene.GetRootGameObjects())
+            {
+                yield return root;
+            }
+        }
+
+        // Helper to get all scene or prefab-stage objects efficiently
         private static IEnumerable<GameObject> GetAllSceneObjects(bool includeInactive)
         {
-            // SceneManager.GetActiveScene().GetRootGameObjects() is faster than FindObjectsOfType<GameObject>()
-            var rootObjects = SceneManager.GetActiveScene().GetRootGameObjects();
+            var roots = GetContextRootGameObjects();
             var allObjects = new List<GameObject>();
-            foreach (var root in rootObjects)
+            foreach (var root in roots)
             {
+                if (root == null)
+                {
+                    continue;
+                }
+
                 allObjects.AddRange(
                     root.GetComponentsInChildren<Transform>(includeInactive)
                         .Select(t => t.gameObject)
                 );
             }
             return allObjects;
+        }
+
+        private static GameObject FindGameObjectByPath(string path, GameObject relativeRoot = null)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return null;
+            }
+
+            string Normalize(string raw)
+            {
+                var trimmed = raw.Trim();
+                if (trimmed.StartsWith("./"))
+                {
+                    trimmed = trimmed.Substring(2);
+                }
+                return trimmed.TrimStart('/');
+            }
+
+            Transform ResolveFrom(Transform root, string trimmedPath)
+            {
+                if (root == null)
+                {
+                    return null;
+                }
+
+                if (string.IsNullOrEmpty(trimmedPath) || trimmedPath == ".")
+                {
+                    return root;
+                }
+
+                return root.Find(trimmedPath);
+            }
+
+            GameObject ResolveRelative(GameObject baseRoot, string candidatePath)
+            {
+                if (baseRoot == null)
+                {
+                    return null;
+                }
+
+                string local = candidatePath;
+
+                if (string.IsNullOrEmpty(local) || local == ".")
+                {
+                    return baseRoot;
+                }
+
+                if (local.StartsWith(baseRoot.name + "/", StringComparison.Ordinal))
+                {
+                    local = local.Substring(baseRoot.name.Length + 1);
+                }
+                else if (local == baseRoot.name)
+                {
+                    return baseRoot;
+                }
+
+                var resolved = ResolveFrom(baseRoot.transform, local);
+                return resolved?.gameObject;
+            }
+
+            string normalizedPath = Normalize(path);
+
+            if (relativeRoot != null)
+            {
+                var resolved = ResolveRelative(relativeRoot, normalizedPath);
+                if (resolved != null)
+                {
+                    return resolved;
+                }
+            }
+
+            var stageRoot = GetPrefabStageRoot();
+            if (stageRoot != null)
+            {
+                var resolved = ResolveRelative(stageRoot, normalizedPath);
+                if (resolved != null)
+                {
+                    return resolved;
+                }
+            }
+
+            return GameObject.Find(path);
         }
 
         /// <summary>

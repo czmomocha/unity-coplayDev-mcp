@@ -12,17 +12,23 @@ from unity_connection import send_command_with_retry
 )
 def manage_gameobject(
     ctx: Context,
-    action: Annotated[Literal["create", "modify", "delete", "find", "add_component", "remove_component", "set_component_property", "get_components"], "Perform CRUD operations on GameObjects and components."],
+    action: Annotated[Literal["create", "modify", "duplicate", "delete", "find", "add_component", "remove_component", "set_component_property", "get_components"], "Perform CRUD operations on GameObjects and components."],
     target: Annotated[str,
                       "GameObject identifier by name or path for modify/delete/component actions"] | None = None,
     search_method: Annotated[Literal["by_id", "by_name", "by_path", "by_tag", "by_layer", "by_component"],
                              "How to find objects. Used with 'find' and some 'target' lookups."] | None = None,
     name: Annotated[str,
                     "GameObject name for 'create' (initial name) and 'modify' (rename) actions ONLY. For 'find' action, use 'search_term' instead."] | None = None,
+    new_name: Annotated[str,
+                        "Optional name override for 'duplicate' action. Falls back to source name when omitted."] | None = None,
     tag: Annotated[str,
                    "Tag name - used for both 'create' (initial tag) and 'modify' (change tag)"] | None = None,
     parent: Annotated[str,
                       "Parent GameObject reference - used for both 'create' (initial parent) and 'modify' (change parent)"] | None = None,
+    maintain_world_position: Annotated[bool | str,
+                                       "For 'duplicate', when reparenting, keep world transform (accepts true/false or string equivalents)"] | None = None,
+    sibling_index: Annotated[int | str,
+                             "Optional sibling index override for 'duplicate' placement"] | None = None,
     position: Annotated[list[float] | str,
                         "Position - [x,y,z] or string '[x,y,z]' for client compatibility"] | None = None,
     rotation: Annotated[list[float] | str,
@@ -107,6 +113,26 @@ def manage_gameobject(
                 return _to_vec3(parts)
         return default
 
+    def _coerce_int(value, default=None):
+        if value is None:
+            return default
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return default
+            try:
+                return int(stripped)
+            except ValueError:
+                return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    sibling_index = _coerce_int(sibling_index)
+    maintain_world_position = _coerce_bool(maintain_world_position)
     position = _coerce_vec(position, default=position)
     rotation = _coerce_vec(rotation, default=rotation)
     scale = _coerce_vec(scale, default=scale)
@@ -158,8 +184,11 @@ def manage_gameobject(
             "target": target,
             "searchMethod": search_method,
             "name": name,
+            "newName": new_name,
             "tag": tag,
             "parent": parent,
+            "maintainWorldPosition": maintain_world_position,
+            "siblingIndex": sibling_index,
             "position": position,
             "rotation": rotation,
             "scale": scale,
