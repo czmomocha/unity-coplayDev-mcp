@@ -1,5 +1,6 @@
 #nullable disable
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -203,6 +204,14 @@ namespace MCPForUnity.Editor.Tools
                         return RemoveComponentFromTarget(@params, targetToken, searchMethod);
                     case "set_component_property":
                         return SetComponentPropertyOnTarget(@params, targetToken, searchMethod);
+                    case "set_jsbehaviour_binding":
+                        return SetJsBehaviourBinding(@params, targetToken, searchMethod);
+                    case "remove_jsbehaviour_binding":
+                        return RemoveJsBehaviourBinding(@params, targetToken, searchMethod);
+                    case "get_jsbehaviour_bindings":
+                        return GetJsBehaviourBindings(@params, targetToken, searchMethod);
+                    case "set_jsbehaviour_bindings_batch":
+                        return SetJsBehaviourBindingsBatch(@params, targetToken, searchMethod);
 
                     default:
                         return Response.Error($"Unknown action: '{action}'.");
@@ -1442,6 +1451,1307 @@ namespace MCPForUnity.Editor.Tools
                 $"Properties set for component '{compName}' on '{targetGo.name}'.",
                 Helpers.GameObjectSerializer.GetGameObjectData(targetGo)
             );
+        }
+
+        private static object SetJsBehaviourBinding(JObject @params, JToken targetToken, string searchMethod)
+        {
+            GameObject targetGo = FindObjectInternal(targetToken, searchMethod, @params);
+            if (targetGo == null)
+            {
+                string identifier =
+                    targetToken?.ToString()
+                    ?? @params["searchTerm"]?.ToString()
+                    ?? "(unspecified)";
+                return Response.Error(
+                    $"Target GameObject ('{identifier}') not found using method '{searchMethod ?? "default"}'."
+                );
+            }
+
+            return JsBehaviourBindingUtility.SetBinding(targetGo, @params);
+        }
+
+        private static object RemoveJsBehaviourBinding(JObject @params, JToken targetToken, string searchMethod)
+        {
+            GameObject targetGo = FindObjectInternal(targetToken, searchMethod, @params);
+            if (targetGo == null)
+            {
+                string identifier =
+                    targetToken?.ToString()
+                    ?? @params["searchTerm"]?.ToString()
+                    ?? "(unspecified)";
+                return Response.Error(
+                    $"Target GameObject ('{identifier}') not found using method '{searchMethod ?? "default"}'."
+                );
+            }
+
+            return JsBehaviourBindingUtility.RemoveBinding(targetGo, @params);
+        }
+
+        private static object GetJsBehaviourBindings(JObject @params, JToken targetToken, string searchMethod)
+        {
+            GameObject targetGo = FindObjectInternal(targetToken, searchMethod, @params);
+            if (targetGo == null)
+            {
+                string identifier =
+                    targetToken?.ToString()
+                    ?? @params["searchTerm"]?.ToString()
+                    ?? "(unspecified)";
+                return Response.Error(
+                    $"Target GameObject ('{identifier}') not found using method '{searchMethod ?? "default"}'."
+                );
+            }
+
+            return JsBehaviourBindingUtility.GetBindings(targetGo, @params);
+        }
+
+        private static object SetJsBehaviourBindingsBatch(JObject @params, JToken targetToken, string searchMethod)
+        {
+            GameObject targetGo = FindObjectInternal(targetToken, searchMethod, @params);
+            if (targetGo == null)
+            {
+                string identifier =
+                    targetToken?.ToString()
+                    ?? @params["searchTerm"]?.ToString()
+                    ?? "(unspecified)";
+                return Response.Error(
+                    $"Target GameObject ('{identifier}') not found using method '{searchMethod ?? "default"}'."
+                );
+            }
+
+            return JsBehaviourBindingUtility.SetBindingsBatch(targetGo, @params);
+        }
+
+        private static class JsBehaviourBindingUtility
+        {
+            private const string ComponentTypeName = "JSBehaviour";
+
+            private enum BindingValueKind
+            {
+                UnityObject,
+                Primitive
+            }
+
+            private sealed class BindingListMetadata
+            {
+                public BindingListMetadata(string publicName, string fieldName, Type valueType, BindingValueKind kind)
+                {
+                    PublicName = publicName;
+                    FieldName = fieldName;
+                    ValueType = valueType;
+                    Kind = kind;
+                }
+
+                public string PublicName { get; }
+                public string FieldName { get; }
+                public Type ValueType { get; }
+                public BindingValueKind Kind { get; }
+            }
+
+            private sealed class BindingListShape
+            {
+                public BindingListShape(
+                    Type listType,
+                    Type elementType,
+                    bool isKeyValuePair,
+                    MemberInfo keyMember,
+                    MemberInfo valueMember,
+                    ConstructorInfo keyValuePairConstructor)
+                {
+                    ListType = listType;
+                    ElementType = elementType;
+                    IsKeyValuePair = isKeyValuePair;
+                    KeyMember = keyMember;
+                    ValueMember = valueMember;
+                    KeyValuePairConstructor = keyValuePairConstructor;
+                }
+
+                public Type ListType { get; }
+                public Type ElementType { get; }
+                public bool IsKeyValuePair { get; }
+                public MemberInfo KeyMember { get; }
+                public MemberInfo ValueMember { get; }
+                public ConstructorInfo KeyValuePairConstructor { get; }
+            }
+
+            private sealed class JsBehaviourContext
+            {
+                public JsBehaviourContext(GameObject gameObject, Component component, object bindings, Type bindingsType)
+                {
+                    GameObject = gameObject;
+                    Component = component;
+                    Bindings = bindings;
+                    BindingsType = bindingsType;
+                }
+
+                public GameObject GameObject { get; }
+                public Component Component { get; }
+                public object Bindings { get; }
+                public Type BindingsType { get; }
+            }
+
+            private static readonly Dictionary<string, BindingListMetadata> BindingMetadata =
+                new Dictionary<string, BindingListMetadata>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "object", new BindingListMetadata("object", "ObjectList", typeof(UnityEngine.Object), BindingValueKind.UnityObject) },
+                    { "bool", new BindingListMetadata("bool", "BoolList", typeof(bool), BindingValueKind.Primitive) },
+                    { "int", new BindingListMetadata("int", "IntList", typeof(int), BindingValueKind.Primitive) },
+                    { "float", new BindingListMetadata("float", "FloatList", typeof(float), BindingValueKind.Primitive) },
+                    { "string", new BindingListMetadata("string", "StringList", typeof(string), BindingValueKind.Primitive) },
+                };
+
+            private static readonly Dictionary<(Type, string), FieldInfo> ListFieldCache =
+                new Dictionary<(Type, string), FieldInfo>();
+
+            private static readonly Dictionary<Type, BindingListShape> ListShapeCache =
+                new Dictionary<Type, BindingListShape>();
+
+            private static Type _cachedJsBehaviourType;
+            private static FieldInfo _cachedBindingsField;
+            private static FieldInfo _cachedExportNameField;
+            private static PropertyInfo _cachedExportNameProperty;
+
+            public static object SetBinding(GameObject targetGo, JObject commandParams)
+            {
+                if (!TryCreateContext(targetGo, out var context, out string error))
+                {
+                    return Response.Error(error);
+                }
+
+                string bindingType = commandParams["bindingType"]?.ToString();
+                string bindingKey = commandParams["bindingKey"]?.ToString();
+                JToken bindingValue = commandParams["bindingValue"];
+
+                if (string.IsNullOrWhiteSpace(bindingType))
+                {
+                    return Response.Error("'bindingType' parameter is required for JSBehaviour bindings.");
+                }
+
+                if (string.IsNullOrWhiteSpace(bindingKey))
+                {
+                    return Response.Error("'bindingKey' parameter is required for JSBehaviour bindings.");
+                }
+
+                if (!TrySetBindingInternal(context, bindingType, bindingKey, bindingValue, commandParams, null, out var bindingData, out error))
+                {
+                    return Response.Error(error);
+                }
+
+                return Response.Success(
+                    $"JSBehaviour binding '{bindingKey}' set successfully on '{targetGo.name}'.",
+                    bindingData
+                );
+            }
+
+            public static object RemoveBinding(GameObject targetGo, JObject commandParams)
+            {
+                if (!TryCreateContext(targetGo, out var context, out string error))
+                {
+                    return Response.Error(error);
+                }
+
+                string bindingType = commandParams["bindingType"]?.ToString();
+                string bindingKey = commandParams["bindingKey"]?.ToString();
+
+                if (string.IsNullOrWhiteSpace(bindingType))
+                {
+                    return Response.Error("'bindingType' parameter is required for removing JSBehaviour bindings.");
+                }
+
+                if (string.IsNullOrWhiteSpace(bindingKey))
+                {
+                    return Response.Error("'bindingKey' parameter is required for removing JSBehaviour bindings.");
+                }
+
+                if (!TryRemoveBindingInternal(context, bindingType, bindingKey, out error))
+                {
+                    return Response.Error(error);
+                }
+
+                return Response.Success(
+                    $"JSBehaviour binding '{bindingKey}' removed from '{targetGo.name}'.",
+                    new
+                    {
+                        gameObjectName = targetGo.name,
+                        instanceID = targetGo.GetInstanceID(),
+                        bindingKey,
+                        bindingType = NormalizeBindingType(bindingType)
+                    }
+                );
+            }
+
+            public static object GetBindings(GameObject targetGo, JObject commandParams)
+            {
+                if (!TryCreateContext(targetGo, out var context, out string error))
+                {
+                    return Response.Error(error);
+                }
+
+                string bindingTypeFilter = commandParams["bindingType"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(bindingTypeFilter) && !BindingMetadata.ContainsKey(bindingTypeFilter))
+                {
+                    return Response.Error($"Unsupported binding_type '{bindingTypeFilter}'. Supported types: {DescribeSupportedBindingTypes()}.");
+                }
+
+                var payload = BuildBindingsPayload(context, bindingTypeFilter);
+                return Response.Success(
+                    $"Retrieved JSBehaviour bindings from '{targetGo.name}'.",
+                    payload
+                );
+            }
+
+            public static object SetBindingsBatch(GameObject targetGo, JObject commandParams)
+            {
+                if (!TryCreateContext(targetGo, out var context, out string error))
+                {
+                    return Response.Error(error);
+                }
+
+                if (!(commandParams["bindings"] is JArray bindingArray) || bindingArray.Count == 0)
+                {
+                    return Response.Error("'bindings' array is required for set_jsbehaviour_bindings_batch.");
+                }
+
+                var results = new List<Dictionary<string, object>>();
+                int successCount = 0;
+
+                foreach (JToken entryToken in bindingArray)
+                {
+                    if (!(entryToken is JObject bindingObj))
+                    {
+                        results.Add(new Dictionary<string, object>
+                        {
+                            ["success"] = false,
+                            ["error"] = "Each bindings entry must be an object."
+                        });
+                        continue;
+                    }
+
+                    string entryType = bindingObj["bindingType"]?.ToString();
+                    string entryKey = bindingObj["bindingKey"]?.ToString();
+                    JToken entryValue = bindingObj["bindingValue"];
+
+                    if (string.IsNullOrWhiteSpace(entryType) || string.IsNullOrWhiteSpace(entryKey))
+                    {
+                        results.Add(new Dictionary<string, object>
+                        {
+                            ["bindingType"] = entryType ?? string.Empty,
+                            ["bindingKey"] = entryKey ?? string.Empty,
+                            ["success"] = false,
+                            ["error"] = "'bindingType' and 'bindingKey' are required for each batch entry."
+                        });
+                        continue;
+                    }
+
+                    if (TrySetBindingInternal(context, entryType, entryKey, entryValue, commandParams, bindingObj, out _, out string entryError))
+                    {
+                        successCount++;
+                        results.Add(new Dictionary<string, object>
+                        {
+                            ["bindingType"] = NormalizeBindingType(entryType),
+                            ["bindingKey"] = entryKey,
+                            ["success"] = true
+                        });
+                    }
+                    else
+                    {
+                        results.Add(new Dictionary<string, object>
+                        {
+                            ["bindingType"] = NormalizeBindingType(entryType),
+                            ["bindingKey"] = entryKey,
+                            ["success"] = false,
+                            ["error"] = entryError
+                        });
+                    }
+                }
+
+                return Response.Success(
+                    $"Set {successCount} JSBehaviour binding(s) on '{targetGo.name}'.",
+                    new
+                    {
+                        gameObjectName = targetGo.name,
+                        instanceID = targetGo.GetInstanceID(),
+                        successCount,
+                        failedCount = results.Count - successCount,
+                        results
+                    }
+                );
+            }
+
+            private static bool TrySetBindingInternal(
+                JsBehaviourContext context,
+                string bindingType,
+                string bindingKey,
+                JToken bindingValue,
+                JObject fallbackParams,
+                JObject perBindingParams,
+                out Dictionary<string, object> bindingData,
+                out string error)
+            {
+                bindingData = null;
+                error = string.Empty;
+
+                if (!TryGetBindingMetadata(bindingType, out var metadata, out error))
+                {
+                    return false;
+                }
+
+                object valueToStore;
+                if (metadata.Kind == BindingValueKind.UnityObject)
+                {
+                    if (!TryResolveUnityObject(bindingValue, perBindingParams ?? fallbackParams, out UnityEngine.Object resolvedObject, out error))
+                    {
+                        return false;
+                    }
+
+                    valueToStore = resolvedObject;
+                }
+                else
+                {
+                    if (!TryConvertPrimitiveValue(bindingValue, metadata.ValueType, out valueToStore, out error))
+                    {
+                        return false;
+                    }
+                }
+
+                if (!TryGetBindingList(context.Bindings, metadata, createIfMissing: true, out IList list, out BindingListShape shape, out error))
+                {
+                    return false;
+                }
+
+                int existingIndex = FindBindingIndex(list, shape, bindingKey);
+
+                if (shape.IsKeyValuePair)
+                {
+                    if (!TryCreateBindingEntry(shape, bindingKey, valueToStore, out object entry, out error))
+                    {
+                        return false;
+                    }
+
+                    if (existingIndex >= 0)
+                    {
+                        list[existingIndex] = entry;
+                    }
+                    else
+                    {
+                        list.Add(entry);
+                    }
+                }
+                else
+                {
+                    if (existingIndex >= 0)
+                    {
+                        object existingEntry = list[existingIndex];
+                        if (!TryAssignBindingValue(shape, existingEntry, valueToStore, out error))
+                        {
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        if (!TryCreateBindingEntry(shape, bindingKey, valueToStore, out object entry, out error))
+                        {
+                            return false;
+                        }
+
+                        list.Add(entry);
+                    }
+                }
+
+                MarkComponentDirty(context.Component);
+
+                bindingData = BuildBindingResult(context, metadata, bindingKey, valueToStore);
+                return true;
+            }
+
+            private static bool TryRemoveBindingInternal(JsBehaviourContext context, string bindingType, string bindingKey, out string error)
+            {
+                error = string.Empty;
+
+                if (!TryGetBindingMetadata(bindingType, out var metadata, out error))
+                {
+                    return false;
+                }
+
+                if (!TryGetBindingList(context.Bindings, metadata, createIfMissing: false, out IList list, out BindingListShape shape, out error))
+                {
+                    if (string.IsNullOrEmpty(error))
+                    {
+                        error = $"No '{metadata.PublicName}' bindings exist on '{context.GameObject.name}'.";
+                    }
+                    return false;
+                }
+
+                int index = FindBindingIndex(list, shape, bindingKey);
+                if (index < 0)
+                {
+                    error = $"Binding key '{bindingKey}' not found in '{metadata.PublicName}' bindings.";
+                    return false;
+                }
+
+                list.RemoveAt(index);
+                MarkComponentDirty(context.Component);
+                return true;
+            }
+
+            private static Dictionary<string, object> BuildBindingsPayload(JsBehaviourContext context, string bindingTypeFilter)
+            {
+                var payload = new Dictionary<string, object>
+                {
+                    ["gameObjectName"] = context.GameObject.name,
+                    ["instanceID"] = context.GameObject.GetInstanceID()
+                };
+
+                string exportName = GetExportName(context.Component);
+                if (!string.IsNullOrEmpty(exportName))
+                {
+                    payload["exportName"] = exportName;
+                }
+
+                var bindingsSnapshot = new Dictionary<string, object>();
+
+                IEnumerable<KeyValuePair<string, BindingListMetadata>> metadataSource = string.IsNullOrWhiteSpace(bindingTypeFilter)
+                    ? BindingMetadata
+                    : BindingMetadata.Where(kvp => kvp.Key.Equals(bindingTypeFilter, StringComparison.OrdinalIgnoreCase));
+
+                foreach (var kvp in metadataSource)
+                {
+                    if (!TryGetBindingList(context.Bindings, kvp.Value, createIfMissing: false, out IList list, out BindingListShape shape, out _))
+                    {
+                        bindingsSnapshot[kvp.Value.PublicName] = new List<Dictionary<string, object>>();
+                        continue;
+                    }
+
+                    bindingsSnapshot[kvp.Value.PublicName] = SerializeBindingList(list, shape, kvp.Value);
+                }
+
+                payload["bindings"] = bindingsSnapshot;
+                return payload;
+            }
+
+            private static Dictionary<string, object> BuildBindingResult(JsBehaviourContext context, BindingListMetadata metadata, string bindingKey, object value)
+            {
+                object serializedValue = metadata.Kind == BindingValueKind.UnityObject
+                    ? SerializeUnityObject(value as UnityEngine.Object)
+                    : value;
+
+                return new Dictionary<string, object>
+                {
+                    ["gameObjectName"] = context.GameObject.name,
+                    ["instanceID"] = context.GameObject.GetInstanceID(),
+                    ["bindingKey"] = bindingKey,
+                    ["bindingType"] = metadata.PublicName,
+                    ["bindingValue"] = serializedValue
+                };
+            }
+
+            private static List<Dictionary<string, object>> SerializeBindingList(
+                IList list,
+                BindingListShape shape,
+                BindingListMetadata metadata)
+            {
+                var serialized = new List<Dictionary<string, object>>();
+                if (list == null || shape == null)
+                {
+                    return serialized;
+                }
+
+                for (int i = 0; i < list.Count; i++)
+                {
+                    object entry = list[i];
+                    if (entry == null)
+                    {
+                        continue;
+                    }
+
+                    string key = ReadBindingKey(shape, entry) ?? string.Empty;
+                    object value = ReadBindingValue(shape, entry);
+                    object serializedValue = metadata.Kind == BindingValueKind.UnityObject
+                        ? SerializeUnityObject(value as UnityEngine.Object)
+                        : value;
+
+                    serialized.Add(new Dictionary<string, object>
+                    {
+                        ["key"] = key,
+                        ["value"] = serializedValue
+                    });
+                }
+
+                return serialized;
+            }
+
+            private static Dictionary<string, object> SerializeUnityObject(UnityEngine.Object obj)
+            {
+                if (obj == null)
+                {
+                    return new Dictionary<string, object>
+                    {
+                        ["name"] = "null",
+                        ["instanceID"] = 0,
+                        ["type"] = "null"
+                    };
+                }
+
+                return new Dictionary<string, object>
+                {
+                    ["name"] = obj.name,
+                    ["instanceID"] = obj.GetInstanceID(),
+                    ["type"] = obj.GetType().FullName
+                };
+            }
+
+            private static bool TryCreateContext(GameObject targetGo, out JsBehaviourContext context, out string error)
+            {
+                context = null;
+                error = string.Empty;
+
+                if (!TryGetJsBehaviourComponent(targetGo, out Component component, out error))
+                {
+                    return false;
+                }
+
+                if (!TryGetBindingsObject(component, out object bindings, out error))
+                {
+                    return false;
+                }
+
+                context = new JsBehaviourContext(targetGo, component, bindings, bindings.GetType());
+                return true;
+            }
+
+            private static bool TryGetJsBehaviourComponent(GameObject targetGo, out Component component, out string error)
+            {
+                component = null;
+                error = string.Empty;
+
+                Type jsBehaviourType = _cachedJsBehaviourType ??= FindType(ComponentTypeName);
+                if (jsBehaviourType == null)
+                {
+                    error = "JSBehaviour component type was not found. Ensure the project defines a 'JSBehaviour' MonoBehaviour.";
+                    return false;
+                }
+
+                component = targetGo.GetComponent(jsBehaviourType);
+                if (component == null)
+                {
+                    error = $"GameObject '{targetGo.name}' does not have a JSBehaviour component.";
+                    return false;
+                }
+
+                return true;
+            }
+
+            private static bool TryGetBindingsObject(Component component, out object bindings, out string error)
+            {
+                bindings = null;
+                error = string.Empty;
+
+                if (!TryGetBindingsField(component.GetType(), out FieldInfo field, out error))
+                {
+                    return false;
+                }
+
+                bindings = field.GetValue(component);
+                if (bindings == null)
+                {
+                    bindings = Activator.CreateInstance(field.FieldType);
+                    field.SetValue(component, bindings);
+                }
+
+                return true;
+            }
+
+            private static bool TryGetBindingsField(Type jsBehaviourType, out FieldInfo field, out string error)
+            {
+                error = string.Empty;
+
+                if (_cachedBindingsField != null && _cachedBindingsField.DeclaringType == jsBehaviourType)
+                {
+                    field = _cachedBindingsField;
+                    return true;
+                }
+
+                field = jsBehaviourType.GetField("Bindings", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field == null)
+                {
+                    error = $"JSBehaviour component '{jsBehaviourType.Name}' is missing a 'Bindings' field.";
+                    return false;
+                }
+
+                _cachedBindingsField = field;
+                return true;
+            }
+
+            private static void MarkComponentDirty(Component component)
+            {
+                if (component == null)
+                {
+                    return;
+                }
+
+                EditorUtility.SetDirty(component);
+                if (PrefabUtility.IsPartOfPrefabInstance(component))
+                {
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(component);
+                }
+            }
+
+            private static bool TryGetBindingMetadata(string bindingType, out BindingListMetadata metadata, out string error)
+            {
+                metadata = null;
+                error = string.Empty;
+
+                if (string.IsNullOrWhiteSpace(bindingType))
+                {
+                    error = "'bindingType' value is required.";
+                    return false;
+                }
+
+                if (!BindingMetadata.TryGetValue(bindingType, out metadata))
+                {
+                    error = $"Unsupported binding_type '{bindingType}'. Supported types: {DescribeSupportedBindingTypes()}.";
+                    return false;
+                }
+
+                return true;
+            }
+
+            private static bool TryGetBindingList(
+                object bindingsContainer,
+                BindingListMetadata metadata,
+                bool createIfMissing,
+                out IList list,
+                out BindingListShape shape,
+                out string error)
+            {
+                list = null;
+                shape = null;
+                error = string.Empty;
+
+                if (bindingsContainer == null)
+                {
+                    error = "Bindings container is null.";
+                    return false;
+                }
+
+                var cacheKey = (bindingsContainer.GetType(), metadata.FieldName);
+                if (!ListFieldCache.TryGetValue(cacheKey, out FieldInfo field))
+                {
+                    field = bindingsContainer
+                        .GetType()
+                        .GetField(metadata.FieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                    if (field == null)
+                    {
+                        error = $"Bindings container does not expose field '{metadata.FieldName}'.";
+                        return false;
+                    }
+
+                    ListFieldCache[cacheKey] = field;
+                }
+
+                object currentValue = field.GetValue(bindingsContainer);
+                if (currentValue == null)
+                {
+                    if (!createIfMissing)
+                    {
+                        return false;
+                    }
+
+                    currentValue = Activator.CreateInstance(field.FieldType);
+                    field.SetValue(bindingsContainer, currentValue);
+                }
+
+                if (!(currentValue is IList typedList))
+                {
+                    error = $"Field '{metadata.FieldName}' is not a list.";
+                    return false;
+                }
+
+                if (!TryGetBindingListShape(typedList, metadata, out shape, out error))
+                {
+                    return false;
+                }
+
+                list = typedList;
+                return true;
+            }
+
+            private static bool TryGetBindingListShape(
+                IList list,
+                BindingListMetadata metadata,
+                out BindingListShape shape,
+                out string error)
+            {
+                shape = null;
+                error = string.Empty;
+
+                if (list == null)
+                {
+                    error = $"List for '{metadata.PublicName}' bindings is null.";
+                    return false;
+                }
+
+                Type listType = list.GetType();
+                if (!ListShapeCache.TryGetValue(listType, out shape))
+                {
+                    if (!TryBuildBindingListShape(listType, metadata, out shape, out error))
+                    {
+                        return false;
+                    }
+
+                    ListShapeCache[listType] = shape;
+                }
+
+                return true;
+            }
+
+            private static bool TryBuildBindingListShape(
+                Type listType,
+                BindingListMetadata metadata,
+                out BindingListShape shape,
+                out string error)
+            {
+                shape = null;
+                error = string.Empty;
+
+                Type elementType = GetListElementType(listType);
+                if (elementType == null)
+                {
+                    error = $"Unable to determine element type for list '{listType.FullName}'.";
+                    return false;
+                }
+
+                bool isKeyValuePair = elementType.IsGenericType
+                    && elementType.GetGenericTypeDefinition() == typeof(KeyValuePair<,>);
+
+                if (isKeyValuePair)
+                {
+                    Type[] args = elementType.GetGenericArguments();
+                    if (args.Length != 2 || args[0] != typeof(string))
+                    {
+                        error = $"KeyValuePair bindings must use 'string' keys. Found '{elementType.FullName}'.";
+                        return false;
+                    }
+
+                    if (!args[1].IsAssignableFrom(metadata.ValueType) && !metadata.ValueType.IsAssignableFrom(args[1]))
+                    {
+                        error = $"Value type '{args[1].Name}' is incompatible with '{metadata.ValueType.Name}'.";
+                        return false;
+                    }
+
+                    ConstructorInfo ctor = elementType.GetConstructor(new[] { typeof(string), args[1] });
+                    if (ctor == null)
+                    {
+                        error = $"KeyValuePair type '{elementType.FullName}' is missing the required constructor.";
+                        return false;
+                    }
+
+                    MemberInfo keyProp = elementType.GetProperty("Key", BindingFlags.Instance | BindingFlags.Public);
+                    MemberInfo valueProp = elementType.GetProperty("Value", BindingFlags.Instance | BindingFlags.Public);
+
+                    shape = new BindingListShape(listType, elementType, true, keyProp, valueProp, ctor);
+                    return true;
+                }
+
+                MemberInfo keyMember = FindMember(elementType, "Key");
+                MemberInfo valueMember = FindMember(elementType, "Value");
+
+                if (keyMember == null || valueMember == null)
+                {
+                    error = $"Element type '{elementType.FullName}' must expose 'Key' and 'Value' members.";
+                    return false;
+                }
+
+                Type keyMemberType = GetMemberType(keyMember);
+                if (keyMemberType != typeof(string))
+                {
+                    error = $"Key member on '{elementType.FullName}' must be of type string.";
+                    return false;
+                }
+
+                Type valueMemberType = GetMemberType(valueMember);
+                if (valueMemberType == null
+                    || (!valueMemberType.IsAssignableFrom(metadata.ValueType)
+                        && !metadata.ValueType.IsAssignableFrom(valueMemberType)))
+                {
+                    error = $"Value member on '{elementType.FullName}' is incompatible with '{metadata.ValueType.Name}'.";
+                    return false;
+                }
+
+                if (!MemberSupportsWrite(keyMember) || !MemberSupportsWrite(valueMember))
+                {
+                    error = $"Members on '{elementType.FullName}' must be writable.";
+                    return false;
+                }
+
+                shape = new BindingListShape(listType, elementType, false, keyMember, valueMember, null);
+                return true;
+            }
+
+            private static Type GetListElementType(Type listType)
+            {
+                if (listType == null)
+                {
+                    return null;
+                }
+
+                if (listType.IsArray)
+                {
+                    return listType.GetElementType();
+                }
+
+                if (listType.IsGenericType)
+                {
+                    Type[] args = listType.GetGenericArguments();
+                    if (args.Length == 1)
+                    {
+                        return args[0];
+                    }
+                }
+
+                Type ilistInterface = listType
+                    .GetInterfaces()
+                    .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IList<>));
+
+                return ilistInterface?.GetGenericArguments()[0];
+            }
+
+            private static MemberInfo FindMember(Type type, string memberName)
+            {
+                const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase;
+                FieldInfo field = type.GetField(memberName, Flags);
+                if (field != null)
+                {
+                    return field;
+                }
+
+                return type.GetProperty(memberName, Flags);
+            }
+
+            private static Type GetMemberType(MemberInfo member)
+            {
+                return member switch
+                {
+                    FieldInfo field => field.FieldType,
+                    PropertyInfo property => property.PropertyType,
+                    _ => null
+                };
+            }
+
+            private static bool MemberSupportsWrite(MemberInfo member)
+            {
+                return member switch
+                {
+                    FieldInfo field => !field.IsInitOnly,
+                    PropertyInfo property => property.CanWrite,
+                    _ => false
+                };
+            }
+
+            private static object GetMemberValue(MemberInfo member, object instance)
+            {
+                return member switch
+                {
+                    FieldInfo field => field.GetValue(instance),
+                    PropertyInfo property => property.GetValue(instance),
+                    _ => null
+                };
+            }
+
+            private static bool TrySetMemberValue(MemberInfo member, object instance, object value, out string error)
+            {
+                error = string.Empty;
+
+                switch (member)
+                {
+                    case FieldInfo field:
+                        field.SetValue(instance, value);
+                        return true;
+                    case PropertyInfo property when property.CanWrite:
+                        property.SetValue(instance, value);
+                        return true;
+                    case PropertyInfo property:
+                        error = $"Property '{property.Name}' is read-only.";
+                        return false;
+                    default:
+                        error = "Unsupported member type.";
+                        return false;
+                }
+            }
+
+            private static bool TryCreateBindingEntry(
+                BindingListShape shape,
+                string bindingKey,
+                object value,
+                out object entry,
+                out string error)
+            {
+                entry = null;
+                error = string.Empty;
+
+                if (shape == null)
+                {
+                    error = "Binding list shape is undefined.";
+                    return false;
+                }
+
+                if (shape.IsKeyValuePair)
+                {
+                    if (shape.KeyValuePairConstructor == null)
+                    {
+                        error = "KeyValuePair constructor not found.";
+                        return false;
+                    }
+
+                    entry = shape.KeyValuePairConstructor.Invoke(new[] { bindingKey, value });
+                    return true;
+                }
+
+                object instance = Activator.CreateInstance(shape.ElementType);
+                if (!TrySetMemberValue(shape.KeyMember, instance, bindingKey, out error))
+                {
+                    return false;
+                }
+
+                if (!TrySetMemberValue(shape.ValueMember, instance, value, out error))
+                {
+                    return false;
+                }
+
+                entry = instance;
+                return true;
+            }
+
+            private static bool TryAssignBindingValue(
+                BindingListShape shape,
+                object entry,
+                object value,
+                out string error)
+            {
+                error = string.Empty;
+
+                if (shape == null || entry == null)
+                {
+                    error = "Binding entry is undefined.";
+                    return false;
+                }
+
+                if (shape.IsKeyValuePair)
+                {
+                    error = "KeyValuePair entries cannot be mutated in-place.";
+                    return false;
+                }
+
+                return TrySetMemberValue(shape.ValueMember, entry, value, out error);
+            }
+
+            private static string ReadBindingKey(BindingListShape shape, object entry)
+            {
+                if (shape == null || entry == null)
+                {
+                    return string.Empty;
+                }
+
+                return GetMemberValue(shape.KeyMember, entry)?.ToString();
+            }
+
+            private static object ReadBindingValue(BindingListShape shape, object entry)
+            {
+                if (shape == null || entry == null)
+                {
+                    return null;
+                }
+
+                return GetMemberValue(shape.ValueMember, entry);
+            }
+
+            private static int FindBindingIndex(IList list, BindingListShape shape, string bindingKey)
+            {
+                if (list == null || shape == null || string.IsNullOrEmpty(bindingKey))
+                {
+                    return -1;
+                }
+
+                for (int i = 0; i < list.Count; i++)
+                {
+                    object entry = list[i];
+                    if (entry == null)
+                    {
+                        continue;
+                    }
+
+                    string key = ReadBindingKey(shape, entry);
+                    if (string.Equals(key, bindingKey, StringComparison.Ordinal))
+                    {
+                        return i;
+                    }
+                }
+
+                return -1;
+            }
+
+            private static bool TryConvertPrimitiveValue(JToken token, Type targetType, out object value, out string error)
+            {
+                value = null;
+                error = string.Empty;
+
+                if (token == null)
+                {
+                    error = $"bindingValue is required for '{targetType.Name}' bindings.";
+                    return false;
+                }
+
+                try
+                {
+                    if (targetType == typeof(string))
+                    {
+                        value = token.Type == JTokenType.Null ? string.Empty : token.ToString();
+                        return true;
+                    }
+
+                    if (targetType == typeof(bool))
+                    {
+                        switch (token.Type)
+                        {
+                            case JTokenType.Boolean:
+                                value = token.Value<bool>();
+                                return true;
+                            case JTokenType.Integer:
+                                value = token.Value<long>() != 0;
+                                return true;
+                            case JTokenType.String:
+                                string normalized = token.ToString().Trim().ToLowerInvariant();
+                                if (normalized == "true" || normalized == "1" || normalized == "yes" || normalized == "on")
+                                {
+                                    value = true;
+                                    return true;
+                                }
+                                if (normalized == "false" || normalized == "0" || normalized == "no" || normalized == "off")
+                                {
+                                    value = false;
+                                    return true;
+                                }
+                                break;
+                        }
+
+                        error = "Unable to convert bindingValue to bool.";
+                        return false;
+                    }
+
+                    if (targetType == typeof(int))
+                    {
+                        if (token.Type == JTokenType.Integer)
+                        {
+                            value = token.Value<int>();
+                            return true;
+                        }
+
+                        if (token.Type == JTokenType.Float)
+                        {
+                            value = Convert.ToInt32(token.Value<double>());
+                            return true;
+                        }
+
+                        if (token.Type == JTokenType.String && int.TryParse(token.ToString(), out int parsedInt))
+                        {
+                            value = parsedInt;
+                            return true;
+                        }
+
+                        error = "Unable to convert bindingValue to int.";
+                        return false;
+                    }
+
+                    if (targetType == typeof(float))
+                    {
+                        if (token.Type == JTokenType.Float || token.Type == JTokenType.Integer)
+                        {
+                            value = token.Value<float>();
+                            return true;
+                        }
+
+                        if (token.Type == JTokenType.String && float.TryParse(token.ToString(), out float parsedFloat))
+                        {
+                            value = parsedFloat;
+                            return true;
+                        }
+
+                        error = "Unable to convert bindingValue to float.";
+                        return false;
+                    }
+
+                    value = token.ToObject(targetType);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    error = $"Failed to convert bindingValue to {targetType.Name}: {ex.Message}";
+                    return false;
+                }
+            }
+
+            private static bool TryResolveUnityObject(JToken bindingValueToken, JObject contextParams, out UnityEngine.Object resolved, out string error)
+            {
+                resolved = null;
+                error = string.Empty;
+
+                if (bindingValueToken == null)
+                {
+                    error = "bindingValue is required for object bindings.";
+                    return false;
+                }
+
+                if (bindingValueToken.Type == JTokenType.Object)
+                {
+                    var spec = (JObject)bindingValueToken;
+                    JToken targetToken =
+                        spec["instance_id"]
+                        ?? spec["instanceId"]
+                        ?? spec["target"]
+                        ?? spec["search_term"]
+                        ?? spec["searchTerm"];
+
+                    if (targetToken == null)
+                    {
+                        error = "bindingValue.target (or instance_id) is required for object bindings.";
+                        return false;
+                    }
+
+                    string searchMethod = spec["search_method"]?.ToString() ?? spec["searchMethod"]?.ToString();
+                    JObject findParams = BuildFindParamsFromSpec(spec, contextParams);
+                    if (findParams["searchTerm"] == null && targetToken.Type == JTokenType.String)
+                    {
+                        findParams["searchTerm"] = targetToken;
+                    }
+
+                    GameObject resolvedGo = FindObjectInternal(targetToken, searchMethod, findParams);
+                    if (resolvedGo == null)
+                    {
+                        error = $"Binding value GameObject '{targetToken}' not found using method '{searchMethod ?? "default"}'.";
+                        return false;
+                    }
+
+                    string componentName =
+                        spec["component"]?.ToString()
+                        ?? spec["component_name"]?.ToString()
+                        ?? spec["componentName"]?.ToString();
+
+                    if (!string.IsNullOrWhiteSpace(componentName))
+                    {
+                        Type componentType = FindType(componentName);
+                        if (componentType == null || !typeof(Component).IsAssignableFrom(componentType))
+                        {
+                            error = $"Component '{componentName}' was not found or is not a valid Component.";
+                            return false;
+                        }
+
+                        Component componentInstance = resolvedGo.GetComponent(componentType);
+                        if (componentInstance == null)
+                        {
+                            error = $"Component '{componentName}' not found on '{resolvedGo.name}'.";
+                            return false;
+                        }
+
+                        resolved = componentInstance;
+                        return true;
+                    }
+
+                    resolved = resolvedGo;
+                    return true;
+                }
+
+                JObject fallbackParams = null;
+                if (contextParams?["searchInactive"] != null)
+                {
+                    fallbackParams = new JObject
+                    {
+                        ["searchInactive"] = contextParams["searchInactive"]
+                    };
+                }
+
+                GameObject fallbackGo = FindObjectInternal(bindingValueToken, null, fallbackParams);
+                if (fallbackGo != null)
+                {
+                    resolved = fallbackGo;
+                    return true;
+                }
+
+                error = $"Could not resolve binding value '{bindingValueToken}'. Provide a structured binding_value with search instructions.";
+                return false;
+            }
+
+            private static JObject BuildFindParamsFromSpec(JObject spec, JObject fallbackParams)
+            {
+                var findParams = new JObject();
+
+                var searchInactiveToken = spec["search_inactive"] ?? spec["searchInactive"];
+                if (searchInactiveToken != null)
+                {
+                    findParams["searchInactive"] = searchInactiveToken;
+                }
+                else if (fallbackParams?["searchInactive"] != null)
+                {
+                    findParams["searchInactive"] = fallbackParams["searchInactive"];
+                }
+
+                var searchInChildrenToken = spec["search_in_children"] ?? spec["searchInChildren"];
+                if (searchInChildrenToken != null)
+                {
+                    findParams["searchInChildren"] = searchInChildrenToken;
+                }
+
+                var searchTermToken = spec["search_term"] ?? spec["searchTerm"];
+                if (searchTermToken != null)
+                {
+                    findParams["searchTerm"] = searchTermToken;
+                }
+
+                return findParams;
+            }
+
+            private static string GetExportName(Component component)
+            {
+                if (component == null)
+                {
+                    return string.Empty;
+                }
+
+                Type componentType = component.GetType();
+
+                if (_cachedExportNameField == null || _cachedExportNameField.DeclaringType != componentType)
+                {
+                    _cachedExportNameField = componentType.GetField("ExportName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                }
+
+                if (_cachedExportNameField != null)
+                {
+                    object value = _cachedExportNameField.GetValue(component);
+                    return value?.ToString() ?? string.Empty;
+                }
+
+                if (_cachedExportNameProperty == null || _cachedExportNameProperty.DeclaringType != componentType)
+                {
+                    _cachedExportNameProperty = componentType.GetProperty("ExportName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                }
+
+                if (_cachedExportNameProperty != null)
+                {
+                    object value = _cachedExportNameProperty.GetValue(component);
+                    return value?.ToString() ?? string.Empty;
+                }
+
+                return string.Empty;
+            }
+
+            private static string NormalizeBindingType(string raw)
+            {
+                return string.IsNullOrWhiteSpace(raw) ? string.Empty : raw.Trim().ToLowerInvariant();
+            }
+
+            private static string DescribeSupportedBindingTypes()
+            {
+                return string.Join(", ", BindingMetadata.Keys.OrderBy(k => k));
+            }
         }
 
         // --- Internal Helpers ---

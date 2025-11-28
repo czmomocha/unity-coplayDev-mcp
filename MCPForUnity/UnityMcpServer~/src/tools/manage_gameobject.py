@@ -12,7 +12,7 @@ from unity_connection import send_command_with_retry
 )
 def manage_gameobject(
     ctx: Context,
-    action: Annotated[Literal["create", "modify", "duplicate", "delete", "find", "add_component", "remove_component", "set_component_property", "get_components"], "Perform CRUD operations on GameObjects and components."],
+    action: Annotated[Literal["create", "modify", "duplicate", "delete", "find", "add_component", "remove_component", "set_component_property", "get_components", "set_jsbehaviour_binding", "remove_jsbehaviour_binding", "get_jsbehaviour_bindings", "set_jsbehaviour_bindings_batch"], "Perform CRUD operations on GameObjects and components."],
     target: Annotated[str,
                       "GameObject identifier by name or path for modify/delete/component actions"] | None = None,
     search_method: Annotated[Literal["by_id", "by_name", "by_path", "by_tag", "by_layer", "by_component"],
@@ -68,6 +68,14 @@ def manage_gameobject(
     # -- Component Management Arguments --
     component_name: Annotated[str,
                               "Component name for 'add_component' and 'remove_component' actions"] | None = None,
+    binding_type: Annotated[str,
+                            "JSBehaviour binding type (object, bool, int, float, string)"] | None = None,
+    binding_key: Annotated[str,
+                           "JSBehaviour binding key"] | None = None,
+    binding_value: Annotated[Any,
+                              "JSBehaviour binding value (primitive or search object)"] | None = None,
+    bindings: Annotated[list[dict[str, Any]],
+                        "Batch JSBehaviour bindings payload"] | None = None,
     # Controls whether serialization of private [SerializeField] fields is included
     includeNonPublicSerialized: Annotated[bool | str,
                                           "Controls whether serialization of private [SerializeField] fields is included (accepts true/false or 'true'/'false')"] | None = None,
@@ -153,6 +161,13 @@ def manage_gameobject(
     # Ensure final type is a dict (object) if provided
     if component_properties is not None and not isinstance(component_properties, dict):
         return {"success": False, "message": "component_properties must be a JSON object (dict)."}
+
+    if isinstance(binding_value, str):
+        try:
+            binding_value = json.loads(binding_value)
+            ctx.info("manage_gameobject: coerced binding_value from JSON string")
+        except json.JSONDecodeError:
+            pass
     try:
         # Map tag to search_term when search_method is by_tag for backward compatibility
         if action == "find" and search_method == "by_tag" and tag is not None and search_term is None:
@@ -206,6 +221,10 @@ def manage_gameobject(
             "searchInChildren": search_in_children,
             "searchInactive": search_inactive,
             "componentName": component_name,
+            "bindingType": binding_type,
+            "bindingKey": binding_key,
+            "bindingValue": binding_value,
+            "bindings": bindings,
             "includeNonPublicSerialized": includeNonPublicSerialized
         }
         params = {k: v for k, v in params.items() if v is not None}
